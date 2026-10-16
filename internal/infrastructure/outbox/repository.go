@@ -40,7 +40,7 @@ func (r *Repository) getExecutor(ctx context.Context) dbExecutor {
 	return r.pool
 }
 
-// 给热路径 gracePeriod 的时间将已发送的信息从 pending 改成 published
+// 给热路径 gracePeriod 的时间将已发送的信息删掉
 func (r *Repository) FetchingPending(ctx context.Context, batchSize int, gracePeriod time.Duration) ([]*Message, error) {
 
 	threshold := time.Now().Add(-gracePeriod).UnixMilli()

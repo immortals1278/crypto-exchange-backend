@@ -80,7 +80,7 @@ func (w *Worker) process(ctx context.Context) {
 					zap.Error(publishErr),
 				)
 				if err := w.repo.IncrementRetry(txCtx, msg.ID); err != nil {
-					return fmt.Errorf("增加 retry_count 失敗: %w", err)
+					return fmt.Errorf("增加 retry_count 失败: %w", err)
 				}
 				continue
 			}
