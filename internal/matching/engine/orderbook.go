@@ -51,6 +51,13 @@ func (ob *Orderbook) RemoveAskOrder() {
 	}
 }
 
+func (ob *Orderbook) RemoveBidOrder() {
+	if len(ob.bids) > 0 {
+		ob.bids[0] = nil // 避免内存泄露
+		ob.bids = ob.bids[1:]
+	}
+}
+
 func (ob *Orderbook) BestBid() (order *Order) {
 	if len(ob.bids) == 0 {
 		return nil

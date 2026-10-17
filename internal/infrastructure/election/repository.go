@@ -53,7 +53,7 @@ func (r *Repository) ExtendLease(ctx context.Context, partition, instanceID stri
 	expiresAt := time.Now().Add(leaseDuration)
 
 	cmdTag, err := r.pool.Exec(ctx, `
-		UPDATE partition_leader_lock
+		UPDATE partition_leader_locks
 		SET expires_at = $1
 		WHERE partition = $2 AND leader_id = $3 AND fencing_token = $4`,
 		expiresAt, partition, instanceID, fencingToken)
@@ -69,8 +69,8 @@ func (r *Repository) ExtendLease(ctx context.Context, partition, instanceID stri
 
 func (r *Repository) ReleaseLock(ctx context.Context, partition, instanceID string) error {
 	_, err := r.pool.Exec(ctx, `
-		UPDATE partition_leader_lock
-		SET EXPIRED_AT = 0
+		UPDATE partition_leader_locks
+		SET expires_at = 0
 		WHERE partition = $1 AND leader_id = $2
 		`, partition, instanceID)
 	return err

@@ -49,8 +49,8 @@ func (e *Engine) matchBuyOrder(buyOrder *Order) []*Trade {
 			break
 		}
 
-		// 避免左手换右手
-		if buyOrder.Side == bestAsk.Side {
+		// 避免自成交（同一用户买单撞到自己的卖单）
+		if buyOrder.UserID == bestAsk.UserID {
 			buyOrder.Quantity = decimal.Zero
 			break
 		}
@@ -105,8 +105,8 @@ func (e *Engine) matchSellOrder(sellOrder *Order) []*Trade {
 			break
 		}
 
-		// 避免左手换右手
-		if sellOrder.Side == bestBid.Side {
+		// 避免自成交（同一用户卖单撞到自己的买单）
+		if sellOrder.UserID == bestBid.UserID {
 			sellOrder.Quantity = decimal.Zero
 			break
 		}
@@ -140,7 +140,7 @@ func (e *Engine) matchSellOrder(sellOrder *Order) []*Trade {
 
 		// 如果挂单完全成交，从orderbook移除
 		if bestBid.Quantity.IsZero() {
-			e.orderbook.RemoveAskOrder()
+			e.orderbook.RemoveBidOrder()
 		}
 
 		// 如果吃单完全成交，结束

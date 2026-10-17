@@ -42,22 +42,22 @@ func (s *Subscriber) HandleEvents(ctx context.Context, key, value []byte) error 
 
 	// 解码eventTyp决定路由
 	var envelope struct {
-		eventType domain.EventType
+		EventType domain.EventType `json:"event_type"`
 	}
 	if err := json.Unmarshal(value, &envelope); err != nil {
 		return fmt.Errorf("matching事件解析失败: %w", err)
 	}
 
-	switch envelope.eventType {
+	switch envelope.EventType {
 	case domain.EventOrderPlaced:
 		var event domain.OrderPlacedEvent
-		if err := json.Unmarshal(value, event); err != nil {
+		if err := json.Unmarshal(value, &event); err != nil {
 			return fmt.Errorf("placeOrder事件解析失败: %w", err)
 		}
 		return s.HandleOrderPlaced(ctx, &event)
 	case domain.EventOrderCancelRequested:
 		var event domain.OrderCancelRequestedEvent
-		if err := json.Unmarshal(value, event); err != nil {
+		if err := json.Unmarshal(value, &event); err != nil {
 			return fmt.Errorf("CancelOrderRequest事件解析失败: %w", err)
 		}
 		return s.HandleOrderCancelRequested(ctx, &event)

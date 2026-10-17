@@ -91,7 +91,7 @@ func (w *Worker) process(ctx context.Context) {
 			return nil
 		}
 
-		if err := w.repo.MarkPublishedWorker(ctx, SuccessID); err != nil {
+		if err := w.repo.MarkPublishedWorker(txCtx, SuccessID); err != nil {
 			return fmt.Errorf("已发送的outboxMsg清除失败:%w", err)
 		}
 		return nil

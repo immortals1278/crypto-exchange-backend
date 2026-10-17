@@ -79,7 +79,7 @@ func main() {
 	consumerCtx, cancelConsumers := context.WithCancel(context.Background())
 	defer cancelConsumers()
 
-	settleConsumer, err := kafka.NewConsumer(kafkaCfg, "order-service", []string{domain.TopicSettlements}) // kafka consumer没实现
+	settleConsumer, err := kafka.NewConsumer(kafkaCfg, "order-service", []string{domain.TopicSettlements})
 	if err != nil {
 		logger.Log.Fatal("orderService 建立consumer失败", zap.Error(err))
 	}
