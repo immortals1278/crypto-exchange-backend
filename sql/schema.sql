@@ -26,14 +26,12 @@ CREATE TABLE IF NOT EXISTS accounts (
 
 -- 订单表
 -- side:   1=BUY, 2=SELL
--- type:   1=LIMIT, 2=MARKET
 -- status: 1=NEW, 2=PARTIALLY_FILLED, 3=FILLED, 4=CANCELED, 5=REJECTED
 CREATE TABLE IF NOT EXISTS orders (
     id UUID NOT NULL PRIMARY KEY,          -- Go 端使用 UUID v7 生成
     user_id UUID NOT NULL REFERENCES users(id),
     symbol VARCHAR(20) NOT NULL,           -- 例如 "BTC-USD"
     side SMALLINT NOT NULL,                -- 1=BUY, 2=SELL
-    type SMALLINT NOT NULL,                -- 1=LIMIT, 2=MARKET
     price DECIMAL(38, 18) NOT NULL,
     quantity DECIMAL(38, 18) NOT NULL,
     filled_quantity DECIMAL(38, 18) NOT NULL DEFAULT 0,

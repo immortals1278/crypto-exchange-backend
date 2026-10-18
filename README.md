@@ -1,89 +1,77 @@
 # 数字资产撮合交易系统 · 后端
 
-> 一个用于学习与面试展示的加密货币撮合交易后端，实现「订单接入 → 内存撮合 → 结算清分」的完整交易链路。
+> 一个用于学习的加密货币撮合交易后端，实现「订单接入 → 内存撮合 → 结算清分」的完整交易链路。
 > 重点打磨了分布式场景下的两个经典难题：**撮合引擎的高可用（Leader 选举 + Fencing Token 防脑裂）** 与 **消息的可靠投递（Outbox 模式 + at-least-once）**。
 
-- 项目链接：https://github.com/immortals1278/crypto-exchange-backend
+- 项目链接：<https://github.com/immortals1278/crypto-exchange-backend>
 - 技术栈：**Go + Gin + PostgreSQL + Redis + Kafka**
 
----
+***
 
 ## 一、项目简介
 
 系统采用**微服务架构**，按职责拆分为三个可独立部署、可水平扩展的服务：
 
-| 服务 | 端口 | 职责 |
-| --- | --- | --- |
-| **API Gateway（网关）** | `8100` | 统一入口：限流、幂等、CORS、反向代理 |
-| **Order Service（订单服务）** | `8103` | 订单接入、资金锁定、订单落库、Outbox 投递、账户结算 |
+| 服务                        | 端口     | 职责                             |
+| ------------------------- | ------ | ------------------------------ |
+| **API Gateway（网关）**       | `8100` | 统一入口：限流、幂等、CORS、反向代理           |
+| **Order Service（订单服务）**   | `8103` | 订单接入、资金锁定、订单落库、Outbox 投递、账户结算  |
 | **Matching Engine（撮合引擎）** | `8101` | 内存订单簿、价格-时间优先撮合、Leader 选举、状态快照 |
 
 服务间通过 **Kafka 事件驱动**通信，解耦下单与撮合、撮合与结算，天然支持削峰与异步处理。
 
----
+***
 
 ## 二、技术选型
 
-| 组件 | 选型 | 说明 |
-| --- | --- | --- |
-| 语言 / 框架 | Go 1.26 / Gin | 高性能、易并发，Gin 提供 HTTP 路由与中间件 |
-| 数据库 | PostgreSQL（`pgx/v5`） | 事务、行级锁、`ON CONFLICT` 原子更新、`SKIP LOCKED` |
-| 缓存 | Redis（`go-redis/v9`） | 订单簿快照、限流计数、幂等 Key 存储 |
-| 消息队列 | Kafka（`franz-go`） | 事件驱动、消费组、手动提交 offset |
-| 数值精度 | `shopspring/decimal` | 资金/价格精确十进制运算，避免浮点误差 |
-| 日志 | `zap` | 结构化、高性能日志 |
+| 组件      | 选型                   | 说明                                      |
+| ------- | -------------------- | --------------------------------------- |
+| 语言 / 框架 | Go 1.26 / Gin        | 高性能、易并发，Gin 提供 HTTP 路由与中间件              |
+| 数据库     | PostgreSQL（`pgx/v5`） | 事务、行级锁、`ON CONFLICT` 原子更新、`SKIP LOCKED` |
+| 缓存      | Redis（`go-redis/v9`） | 订单簿快照、限流计数、幂等 Key 存储                    |
+| 消息队列    | Kafka（`franz-go`）    | 事件驱动、消费组、手动提交 offset                    |
+| 数值精度    | `shopspring/decimal` | 资金/价格精确十进制运算，避免浮点误差                     |
+| 日志      | `zap`                | 结构化、高性能日志                               |
 
----
+***
 
 ## 三、系统架构
 
-```
-                          ┌──────────────┐
-                          │    Client    │
-                          └──────┬───────┘
-                                 │ HTTP（携带 Idempotency-Key）
-                          ┌──────▼───────┐
-                          │ API Gateway  │  :8100
-                          │ 限流/幂等/CORS│
-                          │ 反向代理      │
-                          └──────┬───────┘
-                                 │ 反向代理
-                          ┌──────▼────────┐
-                          │ Order Service │  :8103
-                          │ 下单+锁资金    │
-                          │ 订单落库       │
-                          │ Outbox 事务写入│
-                          └──┬─────────┬──┘
-                   Outbox Worker│        │消费结算事件
-                              │        │
-                    ┌─────────▼──┐  ┌──▼──────────────┐
-                    │   Kafka    │◀─┤ Settlement 消费  │
-                    │  (franz-go)│  │ (账户清算/解冻)  │
-                    └─────────┬──┘  └─────────────────┘
-                ┌─────────────┼───────────────┐
-        orders  │      trades │      settlements│
-          ┌─────▼─────┐       │                │
-          │ Matching   │───────┘                │
-          │ Engine     │────────────────────────┘
-          │ (仅Leader) │  :8101
-          │ 内存订单簿  │
-          │ Leader选举  │
-          └─────┬──────┘
-                │ 订单簿快照
-          ┌─────▼─────┐
-          │   Redis    │  订单簿缓存 / 限流 / 幂等
-          └───────────┘
+```mermaid
+flowchart TD
+    Client["Client"]
+    GW["API Gateway :8100<br/>限流 / 幂等 / CORS / 反向代理"]
+    Kafka["Kafka（franz-go）"]
+    ME["Matching Engine :8101（仅 Leader）<br/>内存订单簿 · 价格-时间优先<br/>Leader 选举 + Fencing Token"]
+    Redis[("Redis<br/>订单簿缓存 / 限流 / 幂等")]
+
+    subgraph OS["Order Service :8103"]
+        Place["下单 + 锁资金<br/>订单落库 + Outbox 事务写入"]
+        Settle["Settlement 消费<br/>账户清算 / 解冻"]
+    end
+
+    style OS fill:#ECECFF,stroke:#9370DB,color:#333
+
+    Client -->|"HTTP（携带 Idempotency-Key）"| GW
+    GW -->|"反向代理"| Place
+    Place -->|"Outbox Worker：order.placed"| Kafka
+    Kafka -->|"exchange.orders"| ME
+    ME -->|"exchange.settlements（结算事件，内含成交明细）"| Kafka
+    ME -->|"exchange.orderbook（订单簿更新）"| Kafka
+    Kafka -->|"exchange.settlements"| Settle
+    ME -->|"订单簿快照"| Redis
+    GW -.->|"限流 / 幂等 Key"| Redis
 ```
 
 **交易链路（一次下单的完整旅程）：**
 
 1. 客户端携带 `Idempotency-Key` 调用 `POST /api/v1/orders`，网关先做**限流**与**幂等**校验，再反向代理到 Order Service。
-2. Order Service 在**同一个数据库事务**内完成：校验账户 → 锁定资金 → 订单落库 → 写入 Outbox 表，保证「订单」与「待发消息」原子提交。
+2. Order Service 在**同一个数据库事务**内完成：校验账户 → 锁定资金 → 订单落库 → 写入 Outbox 表，保证「订单」与「待发消息」原子提交。后台在outbox表中删除发送kafka事件成功的事件
 3. **Outbox Worker** 定时扫描 `outbox_messages` 中 `Pending` 记录，投递 `order.placed` 事件到 Kafka，成功后删除记录。
-4. **Matching Engine（仅 Leader 实例）** 消费 `order.placed`，在内存订单簿中执行撮合，产出成交、结算与订单簿更新事件。
+4. **Matching Engine（仅 Leader 实例）** 消费 `order.placed`，在内存订单簿中执行撮合，产出结算事件（内含成交明细）与订单簿更新事件。
 5. Order Service 消费 `settlement` 事件完成账户清算（解冻/扣减），并通过幂等检查防止重复结算。
 
----
+***
 
 ## 四、核心亮点
 
@@ -92,12 +80,12 @@
 - 基于 **PostgreSQL 租约锁** 实现 Leader 选举：`partition_leader_locks` 表通过 `INSERT ... ON CONFLICT ... WHERE expires_at < now` 实现「只有租约过期才能抢占」的原子竞选。
 - 每次抢占成功，`fencing_token` **单调递增 +1**，作为该 Leader 的**防脑裂令牌**。
 - 成为 Leader 后：重置内存状态 → 从 DB 还原订单簿快照 → 启动 Kafka 消费；失去 Leader 时立即把 fencing token 清零并停止消费，**确保旧 Leader 在脑裂期间无法继续覆盖新 Leader 的快照/结算**。
-- 续租每 5s 一次、租约 15s，留出 3 个心跳周期的容错窗口，兼顾故障切换速度与误判稳定性。
+- 竞选和续租每 5s 一次、租约 15s，留出 3 个心跳周期的容错窗口，兼顾故障切换速度与误判稳定性。
 
 ### 2. 内存撮合引擎（价格-时间优先 + 自成交保护）
 
 - 每个交易对维护独立的**内存订单簿**（`bids` 降序 / `asks` 升序），撮合采用**价格-时间优先**：取对手方最优价成交，成交价使用挂单方价格（Maker 优先）。
-- 支持限价单、市价单、部分成交、撤单，全程使用 `decimal` 精确计算。
+- 支持限价单、部分成交、撤单，全程使用 `decimal` 精确计算。
 - 引擎内用 `sync.Mutex` 串行化对单个订单簿的写入，保证并发安全；`EngineManager` 用 `sync.RWMutex` 管理多个交易对。
 
 ### 3. 引擎重启状态还原（快照重建）
@@ -125,7 +113,7 @@
 - **令牌桶限流**（Redis 实现，默认 100 req/s），Redis 不可用时自动降级为内存限流与内存幂等，保证网关不因 Redis 故障而不可用。
 - CORS 统一在网关处理，避免各服务重复配置、产生不一致。
 
----
+***
 
 ## 五、目录结构
 
@@ -154,34 +142,34 @@
     └── schema.sql         # 建表语句（订单/账户/成交/outbox/选举锁）
 ```
 
----
+***
 
 ## 六、关键数据模型
 
-| 表 | 作用 |
-| --- | --- |
-| `users` / `accounts` | 用户与账户（`balance` + `locked` 双列，`CHECK` 约束保证非负） |
-| `orders` | 订单（`side/type/status` 用 SMALLINT 枚举，`filled_quantity` 记录部分成交） |
-| `trades` | 成交历史（`maker_order_id` / `taker_order_id`） |
-| `outbox_messages` | Outbox 事件（`status/retry_count`，部分索引加速 Pending 扫描） |
-| `partition_leader_locks` | 选举锁（`leader_id` + 单调递增 `fencing_token` + `expires_at`） |
+| 表                        | 作用                                                            |
+| ------------------------ | ------------------------------------------------------------- |
+| `users` / `accounts`     | 用户与账户（`balance` + `locked` 双列，`CHECK` 约束保证非负）                 |
+| `orders`                 | 订单（`side/status` 用 SMALLINT 枚举，`filled_quantity` 记录部分成交） |
+| `trades`                 | 成交历史（`maker_order_id` / `taker_order_id`）                     |
+| `outbox_messages`        | Outbox 事件（`status/retry_count`，部分索引加速 Pending 扫描）             |
+| `partition_leader_locks` | 选举锁（`leader_id` + 单调递增 `fencing_token` + `expires_at`）        |
 
----
+***
 
 ## 七、快速开始
 
 ### 环境变量
 
-| 变量 | 服务 | 说明 |
-| --- | --- | --- |
-| `DATABASE_URL` | order-service / matching-engine | PostgreSQL 连接串 |
-| `REDIS_URL` | gateway / matching-engine | Redis 地址 |
-| `KAFKA_BROKERS` | 全部 | Kafka broker 列表（逗号分隔） |
-| `INSTANCE_ID` | matching-engine | 引擎实例唯一标识（参与选举） |
-| `KAFKA_RESET_OFFSET` | 消费端 | 无 offset 时从 `latest` / `earliest` 开始 |
-| `ORDER_SERVICE_PORT` | gateway / order-service | 订单服务地址 / 端口 |
-| `MATCHING_ENGINE_PORT` | matching-engine | 健康检查端口 |
-| `GIN_MODE` | 全部 | `release` 时关闭 topic 自动创建 |
+| 变量                     | 服务                              | 说明                                   |
+| ---------------------- | ------------------------------- | ------------------------------------ |
+| `DATABASE_URL`         | order-service / matching-engine | PostgreSQL 连接串                       |
+| `REDIS_URL`            | gateway / matching-engine       | Redis 地址                             |
+| `KAFKA_BROKERS`        | 全部                              | Kafka broker 列表（逗号分隔）                |
+| `INSTANCE_ID`          | matching-engine                 | 引擎实例唯一标识（参与选举）                       |
+| `KAFKA_RESET_OFFSET`   | 消费端                             | 无 offset 时从 `latest` / `earliest` 开始 |
+| `ORDER_SERVICE_PORT`   | gateway / order-service         | 订单服务地址 / 端口                          |
+| `MATCHING_ENGINE_PORT` | matching-engine                 | 健康检查端口                               |
+| `GIN_MODE`             | 全部                              | `release` 时关闭 topic 自动创建             |
 
 ### 启动
 
@@ -205,9 +193,8 @@ go run ./cmd/gateway
 curl -X POST http://localhost:8100/api/v1/orders \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: $(uuidgen)" \
-  -d '{"symbol":"BTC-USD","side":"BUY","type":"LIMIT","price":"50000","quantity":"0.1"}'
+  -d '{"symbol":"BTC-USD","side":"BUY","price":"50000","quantity":"0.1"}'
 ```
 
----
-
+***
 

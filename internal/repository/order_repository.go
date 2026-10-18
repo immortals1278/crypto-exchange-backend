@@ -102,7 +102,7 @@ func (r *PostgresRepository) GetActiveOrders(ctx context.Context) ([]*domain.Ord
 	executor := r.GetExecutor(ctx)
 	// Status 1=NEW, 2=PARTIALLY_FILLED
 	query := `
-		SELECT id, user_id, symbol, side, type, price, quantity, filled_quantity, status, created_at, updated_at
+		SELECT id, user_id, symbol, side, price, quantity, filled_quantity, status, created_at, updated_at
 		FROM orders 
 		WHERE status IN (1, 2) 
 		ORDER BY created_at ASC`
