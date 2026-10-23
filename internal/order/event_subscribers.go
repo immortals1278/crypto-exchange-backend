@@ -5,6 +5,7 @@ import (
 	"atlas-trading-infrastructure/internal/infrastructure/logger"
 	"atlas-trading-infrastructure/internal/matching/engine"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -96,7 +96,7 @@ func (s *EventSubscriber) handleSettlementRequestedEvent(ctx context.Context, ev
 	} else {
 		takerOrder, err := s.orderRepo.GetOrder(ctx, event.TakerOrderID)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, sql.ErrNoRows) {
 				logger.Warn("对应订单不存在 跳过",
 					zap.String("taker_order_id", event.TakerOrderID.String()),
 				)
@@ -156,7 +156,7 @@ func (s *EventSubscriber) executeSettlementTx(ctx context.Context, event *domain
 		for _, id := range allOrderIDs {
 			lockedOrder, err := s.orderRepo.GetOrderForUpdate(ctx, id)
 			if err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
+				if errors.Is(err, sql.ErrNoRows) {
 					logger.Warn("收到过期的结算事件 跳过避免无线重试",
 						zap.String("taker_order_id", event.TakerOrderID.String()),
 						zap.String("missing_order_id", id.String()),
@@ -237,14 +237,14 @@ func (s *EventSubscriber) executeSettlementTx(ctx context.Context, event *domain
 			updateOrder := lockedOrders[id]
 			updateOrder.UpdatedAt = time.Now().UnixMilli()
 			if err := s.orderRepo.UpdateOrder(ctx, updateOrder); err != nil {
-				return fmt.Errorf("更新订单失败: err", err)
+				return fmt.Errorf("更新订单失败: %w", err)
 			}
 			updateOrders = append(updateOrders, cloneOrder(updateOrder))
 		}
 
 		for _, trade := range event.Trades {
 			if err := s.tradeRepo.CreateTrade(ctx, trade); err != nil {
-				return fmt.Errorf("建立成交记录失败: err", err)
+				return fmt.Errorf("建立成交记录失败: %w", err)
 			}
 		}
 
@@ -253,12 +253,12 @@ func (s *EventSubscriber) executeSettlementTx(ctx context.Context, event *domain
 		for _, update := range aggregatedUpdates {
 			if update.Unlock.GreaterThan(decimal.Zero) {
 				if err := s.accountRepo.UnlockFunds(ctx, update.UserID, update.Currency, update.Amount); err != nil {
-					return fmt.Errorf("解锁资金失败: err", err)
+					return fmt.Errorf("解锁资金失败: %w", err)
 				}
 			}
 			if !update.Amount.IsZero() {
 				if err := s.accountRepo.UpdateBalance(ctx, update.UserID, update.Currency, update.Amount); err != nil {
-					return fmt.Errorf("更新用户余额失败: ", err)
+					return fmt.Errorf("更新用户余额失败: %w", err)
 				}
 			}
 		}
@@ -352,7 +352,7 @@ func (s *EventSubscriber) handleOrderCanceled(ctx context.Context, event *domain
 
 		order, err := s.orderRepo.GetOrderForUpdate(ctx, event.OrderID)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, sql.ErrNoRows) {
 				logger.Warn("收到过期撤单结算事件 订单不存在 跳过",
 					zap.String("order_id", event.OrderID.String()),
 				)

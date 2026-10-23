@@ -4,7 +4,7 @@
 > 重点打磨了分布式场景下的两个经典难题：**撮合引擎的高可用（Leader 选举 + Fencing Token 防脑裂）** 与 **消息的可靠投递（Outbox 模式 + at-least-once）**。
 
 - 项目链接：<https://github.com/immortals1278/crypto-exchange-backend>
-- 技术栈：**Go + Gin + PostgreSQL + Redis + Kafka**
+- 技术栈：**Go + Gin + MySQL + Redis + Kafka**
 
 ***
 
@@ -27,7 +27,7 @@
 | 组件      | 选型                   | 说明                                      |
 | ------- | -------------------- | --------------------------------------- |
 | 语言 / 框架 | Go 1.26 / Gin        | 高性能、易并发，Gin 提供 HTTP 路由与中间件              |
-| 数据库     | PostgreSQL（`pgx/v5`） | 事务、行级锁、`ON CONFLICT` 原子更新、`SKIP LOCKED` |
+| 数据库     | MySQL（`go-sql-driver/mysql`） | 事务、行级锁、`ON DUPLICATE KEY` 原子更新、`SKIP LOCKED` |
 | 缓存      | Redis（`go-redis/v9`） | 订单簿快照、限流计数、幂等 Key 存储                    |
 | 消息队列    | Kafka（`franz-go`）    | 事件驱动、消费组、手动提交 offset                    |
 | 数值精度    | `shopspring/decimal` | 资金/价格精确十进制运算，避免浮点误差                     |
@@ -77,7 +77,7 @@ flowchart TD
 
 ### 1. 撮合引擎 Leader 选举 + Fencing Token 防脑裂
 
-- 基于 **PostgreSQL 租约锁** 实现 Leader 选举：`partition_leader_locks` 表通过 `INSERT ... ON CONFLICT ... WHERE expires_at < now` 实现「只有租约过期才能抢占」的原子竞选。
+- 基于 **MySQL 租约锁** 实现 Leader 选举：`partition_leader_locks` 表通过 `INSERT ... ON DUPLICATE KEY UPDATE ... IF(expires_at < now)` 实现「只有租约过期才能抢占」的原子竞选。
 - 每次抢占成功，`fencing_token` **单调递增 +1**，作为该 Leader 的**防脑裂令牌**。
 - 成为 Leader 后：重置内存状态 → 从 DB 还原订单簿快照 → 启动 Kafka 消费；失去 Leader 时立即把 fencing token 清零并停止消费，**确保旧 Leader 在脑裂期间无法继续覆盖新 Leader 的快照/结算**。
 - 竞选和续租每 5s 一次、租约 15s，留出 3 个心跳周期的容错窗口，兼顾故障切换速度与误判稳定性。
@@ -90,7 +90,7 @@ flowchart TD
 
 ### 3. 引擎重启状态还原（快照重建）
 
-- 撮合引擎本身**无状态**，所有「权威数据」沉淀在 PostgreSQL。
+- 撮合引擎本身**无状态**，所有「权威数据」沉淀在 MySQL。
 - 冷启动时从 DB 读取全部活跃订单（`GetActiveOrders`），按「原数量 − 已成交量」还原订单簿，实现引擎重启后的**秒级状态恢复**，无需依赖内存持久化。
 - 恢复完成后将订单簿快照同步到 Redis，供行情/前端查询。
 
@@ -130,16 +130,16 @@ flowchart TD
 │   ├── matching/          # 撮合订阅器、快照还原
 │   │   └── engine/        # 撮合引擎、订单簿、引擎管理器
 │   ├── order/             # 订单服务、结算订阅器
-│   ├── repository/        # Postgres / Redis 数据访问层
+│   ├── repository/        # MySQL / Redis 数据访问层
 │   └── infrastructure/
-│       ├── db/            # pgx 连接池、事务上下文
+│       ├── db/            # database/sql 连接池、事务上下文
 │       ├── election/      # Leader 选举（租约锁 + Fencing Token）
 │       ├── kafka/         # producer / consumer 封装（franz-go）
 │       ├── outbox/        # Outbox 模型 / Repository / Worker
 │       ├── redis/         # Redis 客户端
 │       └── logger/        # zap 日志
 └── sql/
-    └── schema.sql         # 建表语句（订单/账户/成交/outbox/选举锁）
+    └── schema_mysql.sql   # 建表语句（订单/账户/成交/outbox/选举锁）
 ```
 
 ***
@@ -151,7 +151,7 @@ flowchart TD
 | `users` / `accounts`     | 用户与账户（`balance` + `locked` 双列，`CHECK` 约束保证非负）                 |
 | `orders`                 | 订单（`side/status` 用 SMALLINT 枚举，`filled_quantity` 记录部分成交） |
 | `trades`                 | 成交历史（`maker_order_id` / `taker_order_id`）                     |
-| `outbox_messages`        | Outbox 事件（`status/retry_count`，部分索引加速 Pending 扫描）             |
+| `outbox_messages`        | Outbox 事件（`status/retry_count`，联合索引加速 Pending 扫描）             |
 | `partition_leader_locks` | 选举锁（`leader_id` + 单调递增 `fencing_token` + `expires_at`）        |
 
 ***
@@ -162,7 +162,7 @@ flowchart TD
 
 | 变量                     | 服务                              | 说明                                   |
 | ---------------------- | ------------------------------- | ------------------------------------ |
-| `DATABASE_URL`         | order-service / matching-engine | PostgreSQL 连接串                       |
+| `DATABASE_URL`         | order-service / matching-engine | MySQL DSN（如 `user:pass@tcp(host:3306)/db?parseTime=true`） |
 | `REDIS_URL`            | gateway / matching-engine       | Redis 地址                             |
 | `KAFKA_BROKERS`        | 全部                              | Kafka broker 列表（逗号分隔）                |
 | `INSTANCE_ID`          | matching-engine                 | 引擎实例唯一标识（参与选举）                       |
@@ -174,8 +174,8 @@ flowchart TD
 ### 启动
 
 ```bash
-# 1. 初始化数据库（PostgreSQL）
-psql "$DATABASE_URL" -f sql/schema.sql
+# 1. 初始化数据库（MySQL 8.0+）
+mysql -h <host> -P 3306 -u <user> -p <dbname> < sql/schema_mysql.sql
 
 # 2. 启动订单服务
 ORDER_SERVICE_PORT=8103 go run ./cmd/orderService

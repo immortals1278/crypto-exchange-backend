@@ -2,16 +2,15 @@ package db
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5"
+	"database/sql"
 )
 
 type txKeyType struct{}
 
 var TxKey = txKeyType{}
 
-// 从context 中取得事务pgx.Tx
-func GetTx(ctx context.Context) pgx.Tx {
-	tx, _ := ctx.Value(TxKey).(pgx.Tx)
+// 从 context 中取得事务 *sql.Tx
+func GetTx(ctx context.Context) *sql.Tx {
+	tx, _ := ctx.Value(TxKey).(*sql.Tx)
 	return tx
 }

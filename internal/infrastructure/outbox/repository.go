@@ -3,34 +3,47 @@ package outbox
 import (
 	"atlas-trading-infrastructure/internal/infrastructure/db"
 	"context"
+	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Repository struct {
-	pool *pgxpool.Pool
+	pool *sql.DB
 }
 
 type dbExecutor interface {
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func NewRepository(pool *pgxpool.Pool) *Repository {
+func NewRepository(pool *sql.DB) *Repository {
 	return &Repository{pool: pool}
 }
 
 func (r *Repository) WithTx(ctx context.Context, fn func(context.Context) error) error {
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		txCtx := context.WithValue(ctx, db.TxKey, tx)
-		return fn(txCtx)
-	})
+	tx, err := r.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开启事务失败: %w", err)
+	}
+
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
+
+	txCtx := context.WithValue(ctx, db.TxKey, tx)
+	if err := fn(txCtx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *Repository) getExecutor(ctx context.Context) dbExecutor {
@@ -44,12 +57,12 @@ func (r *Repository) getExecutor(ctx context.Context) dbExecutor {
 func (r *Repository) FetchingPending(ctx context.Context, batchSize int, gracePeriod time.Duration) ([]*Message, error) {
 
 	threshold := time.Now().Add(-gracePeriod).UnixMilli()
-	rows, err := r.getExecutor(ctx).Query(ctx, `
+	rows, err := r.getExecutor(ctx).QueryContext(ctx, `
 		SELECT id, aggregate_id, aggregate_type, topic, partition_key, payload, status, retry_count, created_at, published_at
 		FROM outbox_messages
-		WHERE status = $1 AND created_at <= $2
+		WHERE status = ? AND created_at <= ?
 		ORDER BY created_at ASC
-		LIMIT $3
+		LIMIT ?
 		FOR UPDATE SKIP LOCKED`,
 		StatusPending, threshold, batchSize)
 	if err != nil {
@@ -73,12 +86,12 @@ func (r *Repository) FetchingPending(ctx context.Context, batchSize int, gracePe
 	return msgs, rows.Err()
 }
 
-// 更新重复次数
+// 更新重试次数
 func (r *Repository) IncrementRetry(ctx context.Context, id uuid.UUID) error {
-	_, err := r.getExecutor(ctx).Exec(ctx, `
+	_, err := r.getExecutor(ctx).ExecContext(ctx, `
 		UPDATE outbox_messages
 		SET retry_count = retry_count + 1
-		WHERE id = $1`,
+		WHERE id = ?`,
 		id,
 	)
 	return err
@@ -88,10 +101,16 @@ func (r *Repository) MarkPublishedWorker(ctx context.Context, batch []uuid.UUID)
 	if len(batch) == 0 {
 		return nil
 	}
-	_, err := r.getExecutor(ctx).Exec(ctx, `
-	DELETE FROM outbox_messages
-	WHERE id = ANY($1)`,
-		batch)
+
+	// MySQL 没有 = ANY(?)，改为动态生成 IN (?, ?, ...)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+	args := make([]any, len(batch))
+	for i, id := range batch {
+		args[i] = id
+	}
+
+	_, err := r.getExecutor(ctx).ExecContext(ctx,
+		"DELETE FROM outbox_messages WHERE id IN ("+placeholders+")", args...)
 
 	return err
 }
@@ -101,10 +120,10 @@ func (r *Repository) InsertMsg(ctx context.Context, msg Message) error {
 	msg.CreatedAt = time.Now().UnixMilli()
 	msg.Status = StatusPending
 
-	_, err := r.getExecutor(ctx).Exec(ctx, `
+	_, err := r.getExecutor(ctx).ExecContext(ctx, `
 		INSERT INTO outbox_messages
 			(id, aggregate_id, aggregate_type, topic, partition_key, payload, status, retry_count, created_at, published_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID,
 		msg.AggregateID,
 		msg.AggregateType,
@@ -129,24 +148,30 @@ func (r *Repository) BatchInsert(ctx context.Context, msgs []*Message) error {
 		return fmt.Errorf("BatchInsert 必须在事务内执行")
 	}
 
-	rows := make([][]any, 0, len(msgs))
-	for _, msg := range msgs {
+	// MySQL 没有 COPY 协议，改为多值 INSERT
+	const columns = "(id, aggregate_id, aggregate_type, topic, partition_key, payload, status, retry_count, created_at, published_at)"
+	const rowPlaceholders = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+
+	var sb strings.Builder
+	sb.WriteString("INSERT INTO outbox_messages ")
+	sb.WriteString(columns)
+	sb.WriteString(" VALUES ")
+
+	args := make([]any, 0, len(msgs)*10)
+	for i, msg := range msgs {
 		msg.ID, _ = uuid.NewV7()
 		msg.CreatedAt = time.Now().UnixMilli()
 		msg.Status = StatusPending
 
-		rows = append(rows, []any{
-			msg.ID, msg.AggregateID, msg.AggregateType, msg.Topic, msg.PartitionKey, msg.Payload, msg.Status, msg.RetryCount, msg.CreatedAt, msg.PublishedAt,
-		})
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(rowPlaceholders)
+		args = append(args,
+			msg.ID, msg.AggregateID, msg.AggregateType, msg.Topic, msg.PartitionKey,
+			msg.Payload, msg.Status, msg.RetryCount, msg.CreatedAt, msg.PublishedAt)
 	}
 
-	_, err := tx.CopyFrom(
-		ctx,
-		pgx.Identifier{"outbox_messages"},
-		[]string{"id", "aggregate_id", "aggregate_type", "topic", "partition_key", "payload", "status", "retry_count", "created_at", "published_at"},
-		pgx.CopyFromRows(rows),
-	)
-
+	_, err := tx.ExecContext(ctx, sb.String(), args...)
 	return err
-
 }

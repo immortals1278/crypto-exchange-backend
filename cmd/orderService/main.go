@@ -34,13 +34,13 @@ func main() {
 	dbCfg := db.DefaultDBConfig(dbURL)
 	dbCfg.MaxOpenConns = 150            // order-service 分配前台流量，分配更多连接
 	dbCfg.MaxIdleTime = 5 * time.Minute // 连接在池中空闲超过五分钟被关闭
-	pool, err := db.NewPostgresPool(context.Background(), dbCfg)
+	pool, err := db.NewMySQLPool(context.Background(), dbCfg)
 	if err != nil {
 		logger.Log.Fatal("连接数据库失败", zap.Error(err))
 	}
 	defer pool.Close()
 
-	repo := repository.NewPostgresRepository(pool)
+	repo := repository.NewMySQLRepository(pool)
 
 	// kafka Producer（微服务模式kafka连接失败直接fatal）
 	kafkaCfg := kafka.DefaultConfig()

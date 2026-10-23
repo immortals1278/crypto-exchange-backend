@@ -76,5 +76,5 @@ type SettlementRequestedEvent struct {
 type OnOrderBookUpdatedEvent struct {
 	EventType EventType                 `json:"event_type"`
 	Symbol    string                    `json:"symbol"`
-	Snapshot  *engine.OrderBookSnapshot `json:snapshot`
+	Snapshot  *engine.OrderBookSnapshot `json:"snapshot"`
 }

@@ -9,38 +9,42 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func (r *PostgresRepository) UpdateBalance(ctx context.Context, userID uuid.UUID, currency string, amount decimal.Decimal) error {
+func (r *MySQLRepository) UpdateBalance(ctx context.Context, userID uuid.UUID, currency string, amount decimal.Decimal) error {
 	executor := r.GetExecutor(ctx)
 	query := `
-	UPDATE accounts
-	SET balance = balance + $1, updated_at = $4
-	WHERE userid = $2 AND currency = $3`
-	_, err := executor.Exec(ctx, query, amount, userID, currency, time.Now().UnixMilli)
+		UPDATE accounts
+		SET balance = balance + ?, updated_at = ?
+		WHERE user_id = ? AND currency = ?`
+	_, err := executor.ExecContext(ctx, query, amount, time.Now().UnixMilli(), userID, currency)
 
 	return err
 }
 
-func (r *PostgresRepository) LockFunds(ctx context.Context, userid uuid.UUID, currency string, amount decimal.Decimal) error {
+func (r *MySQLRepository) LockFunds(ctx context.Context, userID uuid.UUID, currency string, amount decimal.Decimal) error {
 	executor := r.GetExecutor(ctx)
 	query := `
-	UPDATE accounts
-	SET balance = balance - $1, locked = locked + $1,
-	WHERE userid = $2 AND currency = $3 AND balance >= $1`
+		UPDATE accounts
+		SET balance = balance - ?, locked = locked + ?
+		WHERE user_id = ? AND currency = ? AND balance >= ?`
 
-	tag, err := executor.Exec(ctx, query, amount, userid, currency)
+	tag, err := executor.ExecContext(ctx, query, amount, amount, userID, currency, amount)
 	if err != nil {
 		return err
 	}
 
-	//返回query操作多少行数据
-	if tag.RowsAffected() == 0 {
+	// 返回 query 操作了多少行数据
+	affected, err := tag.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
 		return domain.ErrInsufficientFunds
 	}
 
 	return nil
 }
 
-func (r *PostgresRepository) BatchLockFunds(ctx context.Context, lockFunds map[uuid.UUID]map[string]decimal.Decimal) error {
+func (r *MySQLRepository) BatchLockFunds(ctx context.Context, lockFunds map[uuid.UUID]map[string]decimal.Decimal) error {
 	executor := r.GetExecutor(ctx)
 
 	UserID := make([]uuid.UUID, 0, len(lockFunds))
@@ -75,14 +79,18 @@ func (r *PostgresRepository) BatchLockFunds(ctx context.Context, lockFunds map[u
 		for _, cur := range curkey {
 			amount := currency[cur]
 			query := `
-				UPDATE accounts 
-				SET balance = balance - $1, locked = locked + $1, 
-				WHERE user_id = $2 AND currency = $3 AND balance >= $1`
-			tag, err := executor.Exec(ctx, query, amount, uid, cur)
+				UPDATE accounts
+				SET balance = balance - ?, locked = locked + ?
+				WHERE user_id = ? AND currency = ? AND balance >= ?`
+			tag, err := executor.ExecContext(ctx, query, amount, amount, uid, cur, amount)
 			if err != nil {
 				return err
 			}
-			if tag.RowsAffected() == 0 {
+			affected, err := tag.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if affected == 0 {
 				return domain.ErrInsufficientFunds
 			}
 		}
@@ -91,14 +99,14 @@ func (r *PostgresRepository) BatchLockFunds(ctx context.Context, lockFunds map[u
 	return nil
 }
 
-func (r *PostgresRepository) UnlockFunds(ctx context.Context, userID uuid.UUID, currency string, amount decimal.Decimal) error {
+func (r *MySQLRepository) UnlockFunds(ctx context.Context, userID uuid.UUID, currency string, amount decimal.Decimal) error {
 	executor := r.GetExecutor(ctx)
 	query := `
-	UPDATE accounts
-	SET balance = balance + $1, locked = locked - $1,
-	WHERE userid = $2 AND currency = $3 AND balance >= $1`
+		UPDATE accounts
+		SET balance = balance + ?, locked = locked - ?
+		WHERE user_id = ? AND currency = ? AND locked >= ?`
 
-	_, err := executor.Exec(ctx, query, amount, userID, currency)
+	_, err := executor.ExecContext(ctx, query, amount, amount, userID, currency, amount)
 	if err != nil {
 		return err
 	}
@@ -106,11 +114,11 @@ func (r *PostgresRepository) UnlockFunds(ctx context.Context, userID uuid.UUID, 
 	return nil
 }
 
-func (r *PostgresRepository) GetAccountsByUser(ctx context.Context, userID uuid.UUID) ([]*domain.Account, error) {
+func (r *MySQLRepository) GetAccountsByUser(ctx context.Context, userID uuid.UUID) ([]*domain.Account, error) {
 	executor := r.GetExecutor(ctx)
-	query := `SELECT id, user_id, currency, balance, locked, created_at, updated_at FROM accounts WHERE user_id = $1`
+	query := `SELECT id, user_id, currency, balance, locked, created_at, updated_at FROM accounts WHERE user_id = ?`
 
-	rows, err := executor.Query(ctx, query, userID)
+	rows, err := executor.QueryContext(ctx, query, userID)
 	if err != nil {
 		return nil, err
 	}

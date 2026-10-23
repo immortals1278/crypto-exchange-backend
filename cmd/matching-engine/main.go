@@ -34,13 +34,13 @@ func main() {
 	dbCfg := db.DefaultDBConfig(dbURL)
 	dbCfg.MaxOpenConns = 20 // 撮合引擎数据库操作较少
 
-	pool, err := db.NewPostgresPool(context.Background(), dbCfg)
+	pool, err := db.NewMySQLPool(context.Background(), dbCfg)
 	if err != nil {
 		logger.Log.Fatal("engine 数据库连接失败", zap.Error(err))
 	}
 	defer pool.Close()
 
-	repo := repository.NewPostgresRepository(pool)
+	repo := repository.NewMySQLRepository(pool)
 
 	// redis
 	redisCfg := redis.DefaultConfig()
